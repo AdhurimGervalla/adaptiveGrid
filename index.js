@@ -1,6 +1,9 @@
-document.addEventListener("DOMContentLoaded", () => console.log('loaded'))
+import MutationWorker from "./Classes/MutationWorker";
+import ProxyCell from "./Classes/ProxyCell";
+import NodePipeline from "./Classes/NodePipeline";
+export default class AdaptiveGrid extends HTMLElement {
 
-export class AdaptiveGrid extends HTMLElement {
+    rootNode;
 
     static gridSize = 12;
     static sizeSet = {
@@ -40,58 +43,18 @@ export class AdaptiveGrid extends HTMLElement {
 
     globalStyles = '';
 
-    newNodePipeline = [];
-
-    removingNodePipeline = [];
-
-    mutationObserver = new MutationObserver((mutations) => {
-
-        mutations.forEach((mutation) => {
-            const target = mutation.target;
-            if (!target.isEqualNode(this)) return;
-
-            mutation.addedNodes.forEach(function (el, index) {
-                target.pushToNodePipe(el);
-            });
-            mutation.removedNodes.forEach(function (el, index) {
-                if (el !== undefined && el.nodeType === 1) {
-                    target.removingNodePipeline.push(el);
-                }
-            });
-
-            if (target.newNodePipeline.length > 0 || target.removingNodePipeline.length > 0) {
-                target.build();
-            }
-        });
-    });
-
-    afterInitMutationObserver = new MutationObserver((mutations) => {
-        const mutation = mutations[0];
-        if (mutation["type"] === "attributes") {
-
-            const target = mutation.target;
-            let ancestor = this.checkAncestor(target)
-
-            // add that ancestor to the newNodePipline
-            if (this.isDirectSuccessor(ancestor)) {
-                ancestor.parentNode.pushToNodePipe(ancestor, true, true);
-            }
-        }
-    });
-
+    mutationAgent = new MutationWorker();
+    nodePipeline = new NodePipeline(this);
     cellHeight;
     colGap;
     rowGap;
     width;
     cellHeightPuffer = 0;
 
-    constructor() {
+    constructor(el) {
         // Always call super first in constructor
         super();
-    }
-
-    connectedCallback() {
-        // this.init();
+        this.rootNode = el;
     }
 
     /**
@@ -107,13 +70,14 @@ export class AdaptiveGrid extends HTMLElement {
         this.setGlobalStyles();
         style.textContent = this.globalStyles;
 
-        this.append(style);
-        for (let i = 0; i < this.children.length; i++) {
-            const el = this.children[i];
-            this.pushToNodePipe(el, false, false)
+        this.rootNode.append(style);
+        for (let i = 0; i < this.rootNode.children.length; i++) {
+            const el = this.rootNode.children[i];
+            this.nodePipeline.push(el, false, false)
         }
         this.build();
-        this.mutationObserver.observe(this, {
+        this.mutationAgent.attach(this);
+        this.mutationAgent.observeChildElements(this.rootNode, {
             attributes: false,
             characterData: false,
             childList: true,
@@ -124,7 +88,7 @@ export class AdaptiveGrid extends HTMLElement {
     }
 
     build() {
-        this.afterInitMutationObserver.disconnect()
+        this.mutationAgent.disconnectFromChildTreeChanges();
         this.fillCellStorage();
         this.clearAdaptiveGrid();
         this.setGridHeight();
@@ -132,10 +96,10 @@ export class AdaptiveGrid extends HTMLElement {
         this.buildAdaptiveGrid();
         console.log(this.adaptiveGrid);
         this.setGlobalStyles();
-        this.querySelector('style').innerHTML = this.globalStyles;
+        this.rootNode.querySelector('style').innerHTML = this.globalStyles;
         this.setGridDimensions();
         this.activateAdaptiveGridStyles();
-        this.afterInitMutationObserver.observe(this, {
+        this.mutationAgent.observeChildTreeChanges(this.rootNode, {
             attributes: true,
             characterData: false,
             childList: false,
@@ -151,51 +115,16 @@ export class AdaptiveGrid extends HTMLElement {
      * @returns {*} returns the direct successor from this (adaptive-grid > *)
      */
     checkAncestor(node) {
-        if (node.isEqualNode(this)) return node;
+        if (node.isEqualNode(this.rootNode)) return node;
         let ancestor = node;
-        while (ancestor.parentNode != null && !ancestor.parentNode.isEqualNode(this)) {
+        while (ancestor.parentNode != null && !ancestor.parentNode.isEqualNode(this.rootNode)) {
             ancestor = ancestor.parentNode;
         }
         return ancestor;
     }
 
     isDirectSuccessor(node) {
-        return node.parentNode.isEqualNode(this);
-    }
-
-    pushToNodePipe(el, replace = false, build = false) {
-        if (el !== undefined && el.nodeType === 1 && el.nodeName !== "STYLE") {
-            this.dataset.adaptiveGridActive = "false";
-            const temp = {
-                clientHeight: el.clientHeight,
-                clientWidth: el.clientWidth,
-                dataSet: el.dataSet,
-                ref: el,
-            };
-
-            if (this.reservations.length > 0 && replace) {
-                const index = this.reservations.findIndex((proxyCell) => proxyCell.nodeRef.isEqualNode(el));
-                if (index > -1) {
-                    if (replace) {
-                        this.reservations.splice(index, 1);
-                    }
-                }
-            }
-
-            if (this.cellStorage.length > 0 && replace) {
-                const index = this.cellStorage.findIndex((proxyCell) => proxyCell.nodeRef.isEqualNode(el));
-                if (index > -1) {
-                    if (replace) {
-                        this.cellStorage.splice(index, 1);
-                    }
-                }
-            }
-
-            this.newNodePipeline.push(temp);
-
-
-            if (build) this.build();
-        }
+        return node.parentNode.isEqualNode(this.rootNode);
     }
 
     /**
@@ -208,11 +137,12 @@ export class AdaptiveGrid extends HTMLElement {
      */
     fillCellStorage() {
         this.resetProxyState();
-        this.newNodePipeline = this.newNodePipeline.filter((node) => node.nodeName !== 'STYLE');
-        if (this.newNodePipeline.length > 0) {
+        const newNodes = this.nodePipeline.filter('STYLE');
+
+        if (newNodes.length > 0) {
             // for each new Element, check if it already exists in the cell storage
             // if so, remove the proxycell and place a new one
-            this.newNodePipeline.forEach((child, index) => {
+            newNodes.forEach((child, index) => {
                 const cHeight = child.clientHeight;
                 const proxyCell = new ProxyCell(child.ref);
 
@@ -221,7 +151,7 @@ export class AdaptiveGrid extends HTMLElement {
                     child.dataset.sizeX === null
                 ) {
                     // proxyCell.colSpan = AdaptiveGrid.sizeSet['m'];
-                    const containerWidth = this.parentElement.clientWidth;
+                    const containerWidth = this.rootNode.parentElement.clientWidth;
                     proxyCell.colSpan = Math.ceil(child.clientWidth / (containerWidth / AdaptiveGrid.gridSize));
                 } else {
                     proxyCell.colSpan = AdaptiveGrid.sizeSet[`${child.dataset.sizeX}`];
@@ -230,19 +160,16 @@ export class AdaptiveGrid extends HTMLElement {
 
                 proxyCell.deleted = false;
                 proxyCell.rowSpan = this.calculateRowSpan(proxyCell);
+
                 // TODO: outsource in function
                 if (!this.isEmpty(this.ruleSet)) {
-                    console.log('ruleset', this.ruleSet);
                     // es muss geprüft werden, ob das Element Teilmenge des Rulesets ist
                     const rule = this.getRuleFor(proxyCell);
-                    console.log('rule', rule)
                     if (!this.isEmpty(rule)) {
-                        console.log('has', this.areaMap.hasOwnProperty(rule.area))
                         if (rule.hasOwnProperty('area') && this.areaMap.hasOwnProperty(rule.area)) {
                             const coordinates = this.areaMap[rule.area];
                             proxyCell.posX = coordinates.x;
                             proxyCell.posY = coordinates.y === 'len' ? this.adaptiveGrid.length -1 :  coordinates.y;
-                            console.log('proxyCell, ', proxyCell)
                             this.reservations.push(proxyCell);
                             return;
                         }
@@ -252,17 +179,14 @@ export class AdaptiveGrid extends HTMLElement {
                 this.cellStorage.push(proxyCell);
             });
         }
-
-        if (this.removingNodePipeline.length > 0) {
-            console.log('this.removingNodePipeline', this.removingNodePipeline);
-            this.removingNodePipeline.forEach((child, index) => {
+        const removedNodes = this.nodePipeline.removedNodes;
+        if (removedNodes.length > 0) {
+            removedNodes.forEach((child, index) => {
                 let indexToRemove = this.reservations.findIndex(cell => cell.nodeRef === child);
-                console.log('indexToRemove', indexToRemove)
                 if (indexToRemove !== -1) {
                     this.reservations.splice(indexToRemove, 1);
                 } else {
                     indexToRemove = this.cellStorage.findIndex(cell => cell.nodeRef === child);
-                    console.log('index 2 ', indexToRemove)
                     this.cellStorage.splice(indexToRemove, 1);
                 }
             });
@@ -416,7 +340,6 @@ export class AdaptiveGrid extends HTMLElement {
         if (this.reservations.length !== 0) {
             const filteredReservations = this.reservations.filter(x => !x.deleted);
             highestCell = filteredReservations[0];
-            console.log('heighest cell', highestCell)
             for (let i = 0; i < filteredReservations.length; i++) {
                 const proxyCell = filteredReservations[i];
                 if (proxyCell === undefined) break;
@@ -607,18 +530,19 @@ export class AdaptiveGrid extends HTMLElement {
     }
 
     setGridDimensions() {
-        this.dataset.adaptiveGridRowCount = this.adaptiveGrid.length.toString();
-
+        this.rootNode.dataset.adaptiveGridRowCount = this.adaptiveGrid.length.toString();
     }
 
     activateAdaptiveGridStyles() {
-        this.dataset.adaptiveGridActive = "true";
+        this.rootNode.dataset.adaptiveGridActive = "true";
+        console.log('activate em', this.rootNode.dataset.adaptiveGridActive)
     }
 
     clearAdaptiveGrid() {
         this.gridLayout = '';
-        this.newNodePipeline = [];
-        this.removingNodePipeline = [];
+        // this.newNodePipeline = [];
+        this.nodePipeline.clear();
+        // this.removingNodePipeline = [];
         this.adaptiveGrid = new Array(new Array(AdaptiveGrid.gridSize)); // TODO: muss optimiert werden. Es soll nicht immer das ganze Grid neu gebuildet werden
     }
 
@@ -634,47 +558,6 @@ export class AdaptiveGrid extends HTMLElement {
         }
 
         return {};
-    }
-}
-
-export class ProxyCell {
-    posX = undefined;
-    posY = undefined;
-    size = 0;
-    colSpan = 0;
-    rowSpan = 0;
-    nodeRef = null;
-
-    deleted = false;
-
-    proxyNeighbourNorth = null;
-    proxyNeighbourEast = null;
-    proxyNeighbourSouth = null;
-    proxyNeighbourWest = null;
-
-    constructor(nodeRef) {
-        this.nodeRef = nodeRef;
-    }
-
-    setAttributes(adaptiveGrid) {
-        if (this.colSpan === 0 && this.rowSpan === 0) return;
-        if ((this.posX + this.colSpan) > AdaptiveGrid.gridSize) {
-            const startPos = (this.posX + 2) - this.colSpan; // weil grid 12 Spalten hat und bei 1 anfängt zählen
-            this.nodeRef.dataset.gCStart = startPos.toString();
-            this.nodeRef.dataset.gCEnd = this.colSpan.toString();
-        } else {
-            this.nodeRef.dataset.gCStart = (this.posX + 1).toString();
-            this.nodeRef.dataset.gCEnd = this.colSpan.toString();
-        }
-        if ((this.posY + this.colSpan) > adaptiveGrid.length) {
-            const startPos = (this.posY + 1) - this.colSpan;
-            this.nodeRef.dataset.gRStart = startPos.toString();
-            this.nodeRef.dataset.gREnd = this.rowSpan.toString();
-        } else {
-            this.nodeRef.dataset.gRStart = (this.posY + 1).toString();
-            this.nodeRef.dataset.gREnd = this.rowSpan.toString();
-        }
-
     }
 }
 
