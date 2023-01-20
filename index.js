@@ -1,10 +1,12 @@
 import MutationWorker from "./Classes/MutationWorker";
 import ProxyCell from "./Classes/ProxyCell";
 import NodePipeline from "./Classes/NodePipeline";
-export default class AdaptiveGrid extends HTMLElement {
+export class AdaptiveGrid extends HTMLElement {
 
+    areaMap = {};
+    ruleSet = {};
     rootNode;
-
+    rowCount = 1;
     static gridSize = 12;
     static sizeSet = {
         'xs': 1,
@@ -13,32 +15,10 @@ export default class AdaptiveGrid extends HTMLElement {
         'l': 9,
         'xl': 12,
     };
-
-    // TODO: init ruleset inside init method
-    ruleSet = {
-        "positioning": [
-            {
-                "area": "right-top",
-                "direction": "top-down",
-                "affected": ".right-top" // any css Selector
-            },
-            {
-                "area": "right-bottom",
-                "direction": "down-top",
-                "affected": ".right-bottom" // any css Selector
-            },
-        ],
-    };
     reservations = [];
-    areaMap = {
-        "left-top": {"x": 0, "y": 0},
-        "left-bottom": {"x": 0, "y": 'len'},
-        "right-top": {"x": AdaptiveGrid.gridSize -1, "y": 0},
-        "right-bottom": {"x": AdaptiveGrid.gridSize -1, "y": 'len'}
-    }
-
     cellStorage = [];
     adaptiveGrid = new Array(new Array(AdaptiveGrid.gridSize));
+    register = [];
     gridLayout = '';
 
     globalStyles = '';
@@ -60,12 +40,13 @@ export default class AdaptiveGrid extends HTMLElement {
     /**
      * Returns an Array with all direct Child Elements
      */
-    init(cellHeight = 20, colGap = 0, rowGap = 0, width = 'auto', ruleSet = {}) {
+    init(cellHeight = 20, colGap = 0, rowGap = 0, width = 'auto', areaMap, ruleSet) {
         this.cellHeight = cellHeight;
         this.colGap = colGap;
         this.rowGap = rowGap;
         this.width = width;
-
+        this.areaMap = areaMap;
+        this.ruleSet = ruleSet
         const style = document.createElement("style");
         this.setGlobalStyles();
         style.textContent = this.globalStyles;
@@ -88,13 +69,15 @@ export default class AdaptiveGrid extends HTMLElement {
     }
 
     build() {
+        console.log('build')
+        console.log('this.ruleSet', this.ruleSet)
+
         this.mutationAgent.disconnectFromChildTreeChanges();
         this.fillCellStorage();
         this.clearAdaptiveGrid();
         this.setGridHeight();
         this.handleReservations();
         this.buildAdaptiveGrid();
-        console.log(this.adaptiveGrid);
         this.setGlobalStyles();
         this.rootNode.querySelector('style').innerHTML = this.globalStyles;
         this.setGridDimensions();
@@ -147,15 +130,8 @@ export default class AdaptiveGrid extends HTMLElement {
                 const proxyCell = new ProxyCell(child.ref);
 
                 // set col size
-                if (child.dataset === undefined || child.dataset === null || child.dataset.sizeX === undefined ||
-                    child.dataset.sizeX === null
-                ) {
-                    // proxyCell.colSpan = AdaptiveGrid.sizeSet['m'];
-                    const containerWidth = this.rootNode.parentElement.clientWidth;
-                    proxyCell.colSpan = Math.ceil(child.clientWidth / (containerWidth / AdaptiveGrid.gridSize));
-                } else {
-                    proxyCell.colSpan = AdaptiveGrid.sizeSet[`${child.dataset.sizeX}`];
-                }
+                const containerWidth = this.rootNode.parentElement.clientWidth;
+                proxyCell.colSpan = Math.ceil(child.clientWidth / (containerWidth / AdaptiveGrid.gridSize));
                 proxyCell.size = cHeight;
 
                 proxyCell.deleted = false;
@@ -166,14 +142,12 @@ export default class AdaptiveGrid extends HTMLElement {
                     // es muss geprüft werden, ob das Element Teilmenge des Rulesets ist
                     const rule = this.getRuleFor(proxyCell);
                     if (!this.isEmpty(rule)) {
-                        if (rule.hasOwnProperty('area') && this.areaMap.hasOwnProperty(rule.area)) {
-                            const coordinates = this.areaMap[rule.area];
-                            proxyCell.posX = coordinates.x;
-                            proxyCell.posY = coordinates.y === 'len' ? this.adaptiveGrid.length -1 :  coordinates.y;
-                            this.reservations.push(proxyCell);
+                        proxyCell.rule = rule;
+                        const finalProxyCell = proxyCell.processRules(this.areaMap, this.rowCount);
+                        if (finalProxyCell.posY !== undefined) {
+                            this.reservations.push(finalProxyCell);
                             return;
                         }
-
                     }
                 }
                 this.cellStorage.push(proxyCell);
@@ -193,36 +167,18 @@ export default class AdaptiveGrid extends HTMLElement {
         }
     }
 
-
-
     resetProxyState() {
         if (this.reservations.length > 0) {
             this.reservations.forEach((proxyCell, index) => {
                 proxyCell.deleted = false;
+                proxyCell.setCoordinates(undefined, undefined);
             })
         }
         if (this.cellStorage.length > 0) {
             this.cellStorage.forEach((proxyCell, index) => {
                 proxyCell.deleted = false;
+                proxyCell.setCoordinates(undefined, undefined);
             })
-        }
-    }
-
-    setMinimumHeight() {
-        if (this.cellStorage.length > 0) {
-            this.cellStorage.forEach((proxyCell, index) => {
-                const height = proxyCell.size;
-                if (this.cellHeight === 0) this.cellHeight = height; // first element
-                if (this.cellHeight > height) this.cellHeight = height;
-            })
-        }
-    }
-
-    setCellRowSpan() {
-        for (let i = 0; i < this.cellStorage.length; i++) {
-            const proxyCell = this.cellStorage[i];
-            if (proxyCell === undefined) break;
-            proxyCell.rowSpan = this.calculateRowSpan(proxyCell);
         }
     }
 
@@ -236,7 +192,8 @@ export default class AdaptiveGrid extends HTMLElement {
     handleReservations() {
         if (this.reservations.length > 0) {
             for (let i = 0; i < this.reservations.length; i++) {
-                this.placeReservation(this.reservations[i]);
+                const proxyCell = this.reservations[i];
+                this.placeRes(proxyCell);
             }
         }
     }
@@ -246,6 +203,7 @@ export default class AdaptiveGrid extends HTMLElement {
             for (let i = 0; i < this.cellStorage.length; i++) {
                 this.placeCell();
             }
+            console.log('register', this.register)
         }
     }
 
@@ -265,74 +223,90 @@ export default class AdaptiveGrid extends HTMLElement {
         return highestCell;
     }
 
-    getNextFreePosition() {
-        let row = 0;
-        let col = 0;
+    getNextFreePositionFromRegister(elementToPlace) {
+        // important for reservations
+        let y = elementToPlace.posY === undefined ? 0 : elementToPlace.posY;
+        let x = elementToPlace.posY === undefined ? 0 : elementToPlace.posX;
+        for (let posY = y; posY < this.rowCount; posY++) {
+            for (let posX = x; posX + elementToPlace.colSpan - 1 < AdaptiveGrid.gridSize; posX++) {
+                const elementsOverlap = this.register.filter(el => {
+                    //what elements are even relevant
+                    //If the element to place does not reach the element with its colspan && rowSpan, it is not relevant.
 
-        while (col < this.adaptiveGrid[row].length) {
-            while (row < this.adaptiveGrid.length) {
-                if (this.adaptiveGrid[row][col] === null || this.adaptiveGrid[row][col] === undefined) {
-                    return {"x": col, "y": row};
+                    // el.x = 0   el.y = 2     el.colS = 1    el.
+                    // posX = 0   posY = 0     colSpan = 3    rowSpan = 2
+
+                    if ((el.x > posX + elementToPlace.colSpan - 1) || (el.y > posY + elementToPlace.rowSpan - 1)) return false;
+                    //What elements come in the way of this position
+                    //Does the Element shit in from left
+
+                    if (el.x + el.colSpan - 1 >= posX && el.y + el.rowSpan - 1 >= posY) return true;
+                    return false;
+                });
+                if (elementsOverlap.length === 0) {
+                    if (posY + elementToPlace.rowSpan - 1 > this.rowCount - 1) {
+                        return false;
+                    }
+                    return {"x": posX, "y": posY};
                 }
-                row++;
             }
-            row = 0;
-            col++;
         }
-
-        this.adaptiveGrid.push(new Array(AdaptiveGrid.gridSize));
-        return {"x": 0, "y": this.adaptiveGrid.length - 1};
+        return false;
     }
 
     placeCell() {
-        const coordinates = this.getNextFreePosition();
-        if (coordinates === undefined) return; // no more free space
-        if (coordinates.x === 0 && coordinates.y === 0) { // initial call
-            const highestProxyCell = this.getHighestCell();
-            if (highestProxyCell === null) return;
-            this.occupyGridCells(highestProxyCell, coordinates);
-            return;
-        }
-
-        const desiredColSpan = this.getIdealColSpan(coordinates)
-        const desiredRowSpan = this.getIdealRowSpan(coordinates);
-        if (desiredRowSpan === this.adaptiveGrid.length) {
-            const highestProxyCell = this.getHighestCell();
-            if (highestProxyCell.colSpan > desiredColSpan) {
-                for (let i = 0; i < highestProxyCell.rowSpan; i++) {
-                    this.adaptiveGrid.push(new Array(AdaptiveGrid.gridSize));
-                }
-                coordinates.x = 0;
-                coordinates.y = this.adaptiveGrid.length - highestProxyCell.rowSpan;
-            }
-            this.occupyGridCells(highestProxyCell, coordinates);
-            return;
-        }
-
-
-        let desiredCell = undefined;
-        let cols = desiredColSpan;
-        while (desiredCell === undefined && cols > 0) {
-            desiredCell = this.getDesiredCell(desiredRowSpan, desiredColSpan);
-            cols--;
-        }
-        if (desiredCell !== undefined) {
-            this.occupyGridCells(desiredCell, coordinates);
+        const proxyCell = this.getHighestCell();
+        let coordinates = this.getNextFreePositionFromRegister(proxyCell);
+        console.log('coordinates', coordinates)
+        if (coordinates !== false) {
+            proxyCell.setCoordinates(coordinates.x, coordinates.y);
+            this.register.push({
+                "x": coordinates.x,
+                "y": coordinates.y,
+                "colSpan": proxyCell.colSpan,
+                "rowSpan": proxyCell.rowSpan,
+                "isReservation": false,
+                "proxyCell": proxyCell,
+            });
         } else {
-            desiredCell = this.getHighestCell();
-            for (let i = 0; i < desiredCell.rowSpan; i++) {
-                this.adaptiveGrid.push(new Array(AdaptiveGrid.gridSize));
-            }
-            coordinates.x = 0;
-            coordinates.y = this.adaptiveGrid.length - desiredCell.rowSpan;
-            this.occupyGridCells(desiredCell, coordinates);
+            this.rowCount += proxyCell.rowSpan;
+            console.log('rowCount', this.rowCount)
+            const registeredReservations = this.register.filter((el) => el.isReservation);
+            this.register = this.register.filter(el => !el.isReservation);
+            registeredReservations.forEach(el => {
+                el.proxyCell.processRules(this.areaMap, this.rowCount);
+                this.placeRes(el.proxyCell);
+            });
+            let coordinates = this.getNextFreePositionFromRegister(proxyCell);
+            proxyCell.setCoordinates(coordinates.x, coordinates.y);
+            this.register.push({
+                "x": coordinates.x,
+                "y": coordinates.y,
+                "colSpan": proxyCell.colSpan,
+                "rowSpan": proxyCell.rowSpan,
+                "isReservation": false,
+                "proxyCell": proxyCell
+            });
         }
-
-        // no -> new container
+        proxyCell.setAttributes();
     }
 
+    placeRes(proxyCell) {
+        let coordinates = this.getNextFreePositionFromRegister(proxyCell);
+        this.register.push({
+            "x": coordinates.x,
+            "y": coordinates.y,
+            "colSpan": proxyCell.colSpan,
+            "rowSpan": proxyCell.rowSpan,
+            "isReservation": true,
+            "proxyCell": proxyCell
+        });
+        proxyCell.setAttributes();
+    }
+
+
     isEmpty(object) {
-        return Object.keys(object).length === 0;
+        return this.ruleSet === undefined || Object.keys(object).length === 0;
     }
 
     setGridHeight() {
@@ -352,7 +326,7 @@ export default class AdaptiveGrid extends HTMLElement {
 
         if (this.cellStorage.length !== 0) {
             const filteredCellStorage = this.cellStorage.filter(x => !x.deleted);
-            if ( highestCell === undefined) {
+            if (highestCell === undefined) {
                 highestCell = filteredCellStorage[0];
             }
             for (let i = 0; i < filteredCellStorage.length; i++) {
@@ -366,10 +340,9 @@ export default class AdaptiveGrid extends HTMLElement {
         }
 
         if (highestCell === undefined) return null;
+        this.rowCount = this.rowCount + highestCell.rowSpan - 1;
 
-        for (let i = 1; i < highestCell.rowSpan; i++) {
-            this.adaptiveGrid.push(new Array(AdaptiveGrid.gridSize));
-        }
+
         if (!this.isEmpty(this.ruleSet) && this.reservations.length !== 0) {
             const filteredReservations = this.reservations.filter(x => !x.deleted);
             for (let i = 0; i < filteredReservations.length; i++) {
@@ -377,91 +350,13 @@ export default class AdaptiveGrid extends HTMLElement {
                 // TODO: outsource in function
                 const rule = this.getRuleFor(proxyCell);
                 if (!this.isEmpty(rule)) {
+                    proxyCell.rule = rule;
                     if (rule.hasOwnProperty('area') && this.areaMap.hasOwnProperty(rule.area)) {
-                        const coordinates = this.areaMap[rule.area];
-                        proxyCell.posY = coordinates.y === 'len' ? this.adaptiveGrid.length:  coordinates.y;
+                        proxyCell.processRules(this.areaMap, this.rowCount);
                     }
                 }
             }
         }
-
-    }
-
-    // left-top Iteration
-    occupyGridCells(proxyCell, coordinates) {
-        proxyCell.posX = coordinates.x;
-        proxyCell.posY = coordinates.y;
-        proxyCell.deleted = true;
-        for (let i = proxyCell.posX; i < proxyCell.posX + proxyCell.colSpan; i++) {
-            for (let j = proxyCell.posY; j < proxyCell.posY + proxyCell.rowSpan; j++) {
-                this.adaptiveGrid[j][i] = proxyCell;
-            }
-        }
-        proxyCell.setAttributes(this.adaptiveGrid);
-    }
-
-
-    // intelligent alg
-    placeReservation(proxyCell) {
-        proxyCell.deleted = true;
-        let startX = 0;
-        let startY = proxyCell.posY;
-        if (proxyCell.posX + proxyCell.colSpan > AdaptiveGrid.gridSize - 1) {
-            startX = proxyCell.posX - proxyCell.colSpan;
-        }
-
-        if (proxyCell.posY + proxyCell.rowSpan > this.adaptiveGrid.length) {
-            startY = proxyCell.posY - proxyCell.rowSpan;
-        }
-
-        for (let i = startX; i < startX + proxyCell.colSpan; i++) {
-            for (let j = startY; j < startY + proxyCell.rowSpan; j++) {
-                this.adaptiveGrid[j][i] = proxyCell;
-            }
-        }
-        proxyCell.setAttributes(this.adaptiveGrid);
-    }
-
-    // Todo: funktioniert nicht
-    logGridGutter() {
-        for (let i = 0; i < this.adaptiveGrid.length; i++) {
-            for (let j = 0; j < this.adaptiveGrid[i].length; j++) {
-                const proxyCell = this.adaptiveGrid[i][j];
-                if (proxyCell === undefined) {
-                    this.gridLayout += 'NaN' + '     | ';
-                } else if (proxyCell.nodeRef.dataset.sizeX === undefined) {
-                    this.gridLayout += 'IV ' + '     | '
-                } else {
-                    let filler = '';
-                    if (proxyCell.nodeRef.dataset.sizeX[0] !== 'x') filler = filler + ' '
-                    if (parseInt(proxyCell.rowSpan) < 10) filler = filler + ' ';
-                    this.gridLayout += proxyCell.nodeRef.dataset.sizeX + ' - ' + proxyCell.rowSpan + filler + ' | ';
-                }
-            }
-            this.gridLayout += '\n';
-        }
-
-        console.log(this.gridLayout)
-    }
-
-    getIdealRowSpan(coordinates) {
-        return this.adaptiveGrid.length - coordinates.y;
-    }
-
-    getIdealColSpan(coordinates) {
-        return AdaptiveGrid.gridSize - coordinates.x;
-    }
-
-    getDesiredCell(desiredRowSpan, desiredColSpan) {
-        let desiredCell = undefined;
-        for (let i = desiredRowSpan; i > 0; i--) {
-            for (let j = desiredColSpan; j > 0; j--) {
-                desiredCell = this.cellStorage.find(cell => (cell.rowSpan === i && cell.colSpan === j && !cell.deleted))
-                if (desiredCell !== undefined) break;
-            }
-            if (desiredCell !== undefined) break;
-        }
-        return desiredCell;
     }
 
     setGlobalStyles() {
@@ -474,37 +369,12 @@ export default class AdaptiveGrid extends HTMLElement {
           overflow-x: scroll;
         }
         
-       adaptive-grid [data-size-x="xs"],
-        adaptive-grid .size-xs {
-            width: 8.333%; 
-        }
-        
-        adaptive-grid [data-size-x="s"],
-        adaptive-grid .size-s {
-            width: 24.999%;
-        }
-        
-        adaptive-grid [data-size-x=""m],
-        adaptive-grid .size-m {
-            width: 49.998%;
-        }
-        
-        adaptive-grid [data-size-x="l"],
-        adaptive-grid .size-l {
-            width: 74.997%;
-        }
-        
-        adaptive-grid [data-size-x="xl"],
-        adaptive-grid .size-xl {
-            width: 100%;
-        }
-        
         [data-adaptive-grid-active="true"] {
             display: grid;
             
-            grid-template-columns: repeat(${AdaptiveGrid.gridSize}, calc(8.333% - ${this.colGap}px));
+            grid-template-columns: repeat(${AdaptiveGrid.gridSize}, calc(8.333% - ${this.colGap - 1.25}px));
             
-            grid-template-rows: repeat(${this.adaptiveGrid.length}, ${this.cellHeight}px);  
+            grid-template-rows: repeat(${this.rowCount}, ${this.cellHeight + (this.cellHeight / this.rowCount)}px);  
             grid-auto-flow: dense;
             grid-column-gap: ${this.colGap}px;
             grid-row-gap: ${this.rowGap}px;
@@ -521,7 +391,7 @@ export default class AdaptiveGrid extends HTMLElement {
         }
 
 
-        for (let i = 1; i <= this.adaptiveGrid.length; i++) {
+        for (let i = 1; i <= this.rowCount; i++) {
             style += `[data-g-r-start="${i}"] { grid-row-start: ${i}}`;  // posY
             style += `[data-g-r-end="${i}"] { grid-row-end: span ${i}}`; // rowSpan
         }
@@ -530,31 +400,44 @@ export default class AdaptiveGrid extends HTMLElement {
     }
 
     setGridDimensions() {
-        this.rootNode.dataset.adaptiveGridRowCount = this.adaptiveGrid.length.toString();
+        this.rootNode.dataset.adaptiveGridRowCount = this.rowCount.toString();
     }
 
     activateAdaptiveGridStyles() {
         this.rootNode.dataset.adaptiveGridActive = "true";
-        console.log('activate em', this.rootNode.dataset.adaptiveGridActive)
+
     }
 
     clearAdaptiveGrid() {
+        this.register = [];
         this.gridLayout = '';
         // this.newNodePipeline = [];
         this.nodePipeline.clear();
         // this.removingNodePipeline = [];
-        this.adaptiveGrid = new Array(new Array(AdaptiveGrid.gridSize)); // TODO: muss optimiert werden. Es soll nicht immer das ganze Grid neu gebuildet werden
+        this.rowCount = 1;
     }
 
     getRuleFor(proxyCell) {
-        // TODO: Dynamic search func
-        const node = proxyCell.nodeRef;
-        if (node.classList.contains('right-top')) {
-            return {
-                "area": "right-top",
-                "direction": "top-down",
-                "affected": ".right-top" // only classes
+        const classList = this.ruleSet.positioning.map(function (rule) {
+            return rule.affected;
+        });
+
+        const nodeClasses = [...proxyCell.nodeRef.classList];
+
+        let index = -1;
+
+        const found = nodeClasses.some(function (v) {
+            if (classList.indexOf(v) > -1) {
+                index = classList.indexOf(v);
+                return true;
             }
+            return false;
+        });
+
+        if (found && index > -1) {
+            const nodeClass = classList[index];
+            const ruleIndex = this.ruleSet.positioning.findIndex(rule => rule.affected === nodeClass);
+            return this.ruleSet.positioning[ruleIndex];
         }
 
         return {};

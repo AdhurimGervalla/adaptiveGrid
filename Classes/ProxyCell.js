@@ -1,15 +1,17 @@
-import {AdaptiveGrid} from "../index";
+import {AdaptiveGrid} from "./index.js";
 
 export default class ProxyCell {
     gridSize
-    posX = undefined;
-    posY = undefined;
+    posX = 0;
+    posY = 0;
     size = 0;
     colSpan = 0;
     rowSpan = 0;
     nodeRef = null;
 
     deleted = false;
+
+    rule = undefined;
 
     proxyNeighbourNorth = null;
     proxyNeighbourEast = null;
@@ -20,24 +22,33 @@ export default class ProxyCell {
         this.nodeRef = nodeRef;
     }
 
-    setAttributes(adaptiveGrid) {
+    setAttributes() {
         if (this.colSpan === 0 && this.rowSpan === 0) return;
-        if ((this.posX + this.colSpan) > AdaptiveGrid.gridSize) {
-            const startPos = (this.posX + 2) - this.colSpan; // weil grid 12 Spalten hat und bei 1 anfängt zählen
-            this.nodeRef.dataset.gCStart = startPos.toString();
-            this.nodeRef.dataset.gCEnd = this.colSpan.toString();
-        } else {
-            this.nodeRef.dataset.gCStart = (this.posX + 1).toString();
-            this.nodeRef.dataset.gCEnd = this.colSpan.toString();
-        }
-        if ((this.posY + this.colSpan) > adaptiveGrid.length) {
-            const startPos = (this.posY + 1) - this.colSpan;
-            this.nodeRef.dataset.gRStart = startPos.toString();
-            this.nodeRef.dataset.gREnd = this.rowSpan.toString();
-        } else {
-            this.nodeRef.dataset.gRStart = (this.posY + 1).toString();
-            this.nodeRef.dataset.gREnd = this.rowSpan.toString();
-        }
+        this.deleted = true;
 
+        let colStartPos = (this.posX + 1).toString();
+
+        this.nodeRef.dataset.gCStart = colStartPos.toString();
+        this.nodeRef.dataset.gCEnd = this.colSpan.toString();
+
+        let rowStartPos = (this.posY + 1).toString();
+        this.nodeRef.dataset.gRStart = rowStartPos.toString();
+        this.nodeRef.dataset.gREnd = this.rowSpan.toString();
+
+    }
+
+    processRules(areaMap, rowCount) {
+        if (this.rule === undefined) return;
+        if (this.rule.hasOwnProperty('area') && areaMap.hasOwnProperty(this.rule.area)) {
+            const coordinates = areaMap[this.rule.area];
+            this.posX = coordinates.x === "len" || coordinates.x >= AdaptiveGrid.gridSize -1 ? AdaptiveGrid.gridSize - 1 - (this.colSpan - 1) : coordinates.x;
+            this.posY = coordinates.y === 'len' ? rowCount - 1 - (this.rowSpan -1) :  coordinates.y;
+        }
+        return this;
+    }
+
+    setCoordinates(x, y) {
+        this.posX = x;
+        this.posY = y;
     }
 }
