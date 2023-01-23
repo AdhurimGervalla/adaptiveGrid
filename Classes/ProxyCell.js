@@ -1,4 +1,4 @@
-import {AdaptiveGrid} from "./index.js";
+import {AdaptiveGrid} from "../index.js";
 
 export default class ProxyCell {
     gridSize
